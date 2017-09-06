@@ -7,6 +7,10 @@ it will emulate sound devices.
 This library is ongoing work as I prototype my own Next projects.  Feel free to use it for your own prototypes.  I
 welcome pull requests if you cannot wait for me to add features.
 
+It works by allowing an API to access memory and ports to peek, poke, in and out like you normally do on the real
+hardware.  There are a few convenience functions but I prefer my API to be small and close to the "hardware" as
+possible.
+
 ## Features currently implemented
 
 - 4 zoom modes (accessible to function keys 1-4).
@@ -46,6 +50,8 @@ nxClose(N);
 The function `nxUpdate` allows a custom function to be called once every 1/50th second after which time the VRAM is
 re-rendered.  All frame sync code should be in this custom function.  Any code you want to run that doesn't need to
 be synchronised with the frame should be inside the while loop.
+
+Please read the top of the header file "next.h" for more information.
 
 # Comments, questions, suggestions...
 
