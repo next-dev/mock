@@ -15,8 +15,10 @@ possible.
 
 - 4 zoom modes (accessible to function keys 1-4).
 - Original 48K ULA (including border).
-- 512K Memory Map (32 pages).  Paging has not been implemented yet.
-- Layer 2, including the paging control port and bank start registers.
+- 512K extra memory (40 pages).
+- Layer 2, including the transparency, paging control port and bank start registers.
+- RAM only paging using ports $7FFD and $DFFD.
+- PNG and NIM graphics file loading and saving.
 
 ## Features not implemented but planned for the future
 
@@ -24,8 +26,7 @@ possible.
 - Keyboard input.
 - Debug mode (switches border to unique colour and enables debug keyboard commands).
 - Kempston mouse and joystick (via XInput devices).
-- Memory paging.
-- 128K Spectrum paging support.
+- 128K Spectrum ROM paging support.
 - Full Next video support (including ULAnext, Timex modes, sprites & priorities).
 - AY3-8912 support.
 
@@ -52,6 +53,19 @@ re-rendered.  All frame sync code should be in this custom function.  Any code y
 be synchronised with the frame should be inside the while loop.
 
 Please read the top of the header file "next.h" for more information.
+
+# NIM file format
+
+This library introduces a simple file format for Next graphics.  It uses a 6 byte header followed by the pixel data,
+which is one byte per pixel.  Each pixel byte indexes the current palette.  The header format is:
+
+| Index | Size | Description         |
+|-------|------|---------------------|
+| 0     | 2    | File format version |
+| 2     | 2    | Width               |
+| 4     | 2    | Height              |
+
+The file format version currently is always 0.
 
 # Comments, questions, suggestions...
 
