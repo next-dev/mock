@@ -510,7 +510,7 @@ int gWindowRefCount = 0;
 #define NX_WINDOW_HEIGHT    256
 #define NX_BORDER_WIDTH     ((NX_WINDOW_WIDTH - NX_SCREEN_WIDTH) / 2)
 #define NX_BORDER_HEIGHT    ((NX_WINDOW_HEIGHT - NX_SCREEN_HEIGHT) / 2)
-#define NX_NUM_PAGES        64
+#define NX_NUM_PAGES        40
 
 struct _Next
 {
