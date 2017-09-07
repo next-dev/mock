@@ -9,15 +9,15 @@
 //
 //      - 4 zoom modes
 //      - Original 48K ULA (including border)
-//      - 512K Memory Map (32 pages).
+//      - 1MB Memory Map (64 pages).
 //      - Layer 2.
+//      - Full RAM bank switching to $c000
 //
 // Future features planned to be implemented:
 //
 //      - Keyboard support.
 //      - Kempston support (joystick and mouse).
-//      - Full Next video support (including ULAnext, sprites & priorities).
-//      - Full RAM bank switching.
+//      - Full Next video support (including ULAnext, Timex modes, sprites & priorities).
 //      - AY3-8912 support.
 //      - SID support.
 //
@@ -39,6 +39,12 @@
 #pragma once
 
 #include <stdint.h>
+
+//----------------------------------------------------------------------------------------------------------------------
+// STB Image support.
+// This is required to enable PNG reading.  If you require this functionality, define NX_USE_STB when you define
+// NX_IMPLEMENTATION
+//----------------------------------------------------------------------------------------------------------------------
 
 //----------------------------------------------------------------------------------------------------------------------
 // Type definitions
@@ -75,7 +81,7 @@ typedef char        nxBool;
 //
 //      ... Initialise memory here using the memory API ...
 //
-//      while(nxUpdate())
+//      while(nxUpdate(N, 0))
 //      {
 //          ... Run your code ...
 //
@@ -124,10 +130,19 @@ void nxRedraw(Next N);
 void nxPoke(Next N, nxWord address, nxByte b);
 
 // Write a 16-bit value, little endian, to the current mapped memory.
-void nxPoke16(Next N, nxWord address, nxWord b);
+void nxPoke16(Next N, nxWord address, nxWord w);
+
+// Write a byte to a specific bank.  Address must be from $0000-$3fff
+void nxPokeEx(Next N, nxByte bank, nxWord address, nxByte b);
+
+// Write a 16-bit value to a specific bank.  Address must be from $0000-$3fff
+void nxPoke16Ex(Next N, nxByte bank, nxWord address, nxWord w);
 
 // Write memory contents to the address.  Will return NX_NO if the contents are too big.
 nxBool nxPokeBuffer(Next N, nxWord address, const void* buffer, nxWord size);
+
+// Write a file directly in a bank.  Will return NX_NO if the contents are too big.
+nxBool nxPokeBufferEx(Next N, nxByte bank, nxWord address, const void* buffer, nxWord size);
 
 // Utility function that opens a file, reads it in, calls nxPokeBuffer, then closes the file.
 nxBool nxPokeFile(Next N, nxWord address, const char* fileName);
@@ -139,10 +154,10 @@ nxByte nxPeek(Next N, nxWord address);
 nxWord nxPeek16(Next N, nxWord address);
 
 // Read directly from a bank.
-nxByte nxPeekEx(Next N, nxWord bank, nxWord p);
+nxByte nxPeekEx(Next N, nxByte bank, nxWord p);
 
 // Read a 16-bit value directly from a bank.
-nxWord nxPeek16Ex(Next N, nxWord bank, nxWord p);
+nxWord nxPeek16Ex(Next N, nxByte bank, nxWord p);
 
 //----------------------------------------------------------------------------------------------------------------------
 // IO Ports API
@@ -183,6 +198,18 @@ nxWord nxPeek16Ex(Next N, nxWord bank, nxWord p);
 #define NX_PORT_REG_SELECT      0x243b
 #define NX_PORT_REG_RW          0x253b
 
+// PAGING
+//
+//          7   6   5   4   3   2   1   0
+//        +---+---+---+---+---+---+---+---+
+//  $7ffd |   |   |   |   |   | bits 0-2  |
+//        +---+---+---+---+---+---+---+---+
+//  $dffd |   |   |   |   |   | bits 3-5  |
+//        +---+---+---+---+---+---+---+---+
+//
+#define NX_PORT_128_PAGE        0x7ffd
+#define NX_PORT_NEXT_PAGE       0xdffd
+
 // Output a byte to a port address
 void nxOut(Next N, nxWord port, nxByte b);
 
@@ -222,21 +249,62 @@ void nxDataUnload(NxData d);
 NxData nxDataMake(const char* fileName, nxInt size);
 
 //----------------------------------------------------------------------------------------------------------------------
+// PNG/NIM routines
+// The PNG reading routines rely on stb_image.h.  The PNG writing routines will not.
+//
+// This library supports a custom format called NIM files.  These are simple 2D image files that hold images already
+// in Layer-2 format.  They are just a header with a stream of bytes (each byte being a pixel).  The format is:
+//
+//      Index   Size    Description
+//      0       2       Version (0 = only version right now)
+//      2       2       Width of image
+//      4       2       Height of image
+//      6       W*H     Image data
+//----------------------------------------------------------------------------------------------------------------------
+
+// Load a PNG file and return a 2D byte-array.  Each byte will be a pixel.  True-colour images are converted to
+// a colour in the CURRENT next palette based on closest match.  You need to define NX_USE_STB when you define
+// NX_IMPLEMENTATION to use this functionality.  Currently, will only respect alpha values of 0, or non-zero.  Zero
+// alpha values will be translated to the transparency palette index.
+nxByte* nxPngRead(Next N, const char* fileName, nxWord* width, nxWord* height);
+
+// Free an image loaded by nxPngRead
+void nxPngFree(nxByte* img);
+
+// Write out an uncompressed PNG using the CURRENT palette.
+nxBool nxPngWrite(Next N, const char* fileName, nxByte* img, int width, int height);
+
+// Load a NIM file.  A pointer to a 2d array is returned with the width and height returned in output parameters.
+nxByte* nxNimRead(const char* fileName, nxWord* width, nxWord* height);
+
+// Free an image loaded by nxNimRead
+void nxNimFree(nxByte* img);
+
+// Save an image to a NIM file.
+nxBool nxNimWrite(const char* fileName, nxByte* img, nxWord width, nxWord height);
+
+// Save a screenshot by writing out an uncompressed PNG file.
+//void nxScreenshot(Next N, const char* fileName);
+
+//----------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------
 
 #ifdef NX_IMPLEMENTATION
 
+#include <assert.h>
 #include <conio.h>
 #include <fcntl.h>
 #include <io.h>
+#include <math.h>
 #include <memory.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
 
 #define NxInternal static
+#define NX_ASSERT(x, ...) assert(x)
 
 //----------------------------------------------------------------------------------------------------------------------
 // Basic memory allocation
@@ -268,9 +336,9 @@ NxInternal void* nxMemoryRealloc(void* address, nxInt oldNumBytes, nxInt newNumB
     return nxMemoryOp(address, oldNumBytes, newNumBytes, file, line);
 }
 
-NxInternal void nxMemoryFree(void* address, nxInt numBytes, const char* file, int line)
+NxInternal void nxMemoryFree(void* address, const char* file, int line)
 {
-    nxMemoryOp(address, numBytes, 0, file, line);
+    nxMemoryOp(address, 0, 0, file, line);
 }
 
 NxInternal void nxMemoryCopy(const void* src, void* dst, nxInt numBytes)
@@ -290,7 +358,7 @@ NxInternal void nxMemoryClear(void* mem, nxInt numBytes)
 
 #define NX_ALLOC(numBytes) nxMemoryAlloc((numBytes), __FILE__, __LINE__)
 #define NX_REALLOC(address, oldNumBytes, newNumBytes) nxMemoryRealloc((address), (oldNumBytes), (newNumBytes), __FILE__, __LINE__)
-#define NX_FREE(address, oldNumBytes) nxMemoryFree((address), (oldNumBytes), __FILE__, __LINE__)
+#define NX_FREE(address) nxMemoryFree((address), __FILE__, __LINE__)
 
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -355,6 +423,75 @@ NxInternal void* __nxArrayInternalGrow(void* a, nxInt increment, nxInt elemSize)
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+// Memory Arenas
+// A memory arena is an expanding buffer that can only allocate, never deallocate.  Allocation is just advancing a
+// pointer, increasing the buffer if necessary
+//----------------------------------------------------------------------------------------------------------------------
+
+typedef struct
+{
+    nxByte* start;
+    nxByte* end;
+    nxInt   cursor;
+}
+NxArena;
+
+#define NX_MAX(a,b) ((a) < (b) ? (b) : (a))
+#define NX_ARENA_INCREMENT 4096
+
+NxInternal void nxArenaInit(NxArena* A, nxInt initialSize)
+{
+    nxByte* buffer = (nxByte *)NX_ALLOC(initialSize);
+    if (buffer)
+    {
+        A->start = buffer;
+        A->end = A->start + initialSize;
+        A->cursor = 0;
+    }
+    else
+    {
+        A->start = 0;
+        A->end = 0;
+        A->cursor = 0;
+    }
+}
+
+NxInternal void nxArenaDone(NxArena* A)
+{
+    NX_FREE(A->start);
+    A->start = A->end = 0;
+    A->cursor = 0;
+}
+
+NxInternal void* nxArenaAlloc(NxArena* A, nxInt numBytes)
+{
+    void* p = 0;
+    if ((A->start + A->cursor + numBytes) > A->end)
+    {
+        // We don't have enough room
+        nxInt currentSize = (nxInt)(A->end - A->start);
+        nxInt requiredSize = A->cursor + numBytes;
+        nxInt newSize = currentSize + NX_MAX(requiredSize, NX_ARENA_INCREMENT);
+
+        nxByte* newArena = (nxByte *)NX_REALLOC(A, currentSize, newSize);
+
+        if (newArena)
+        {
+            A->start = newArena;
+            A->end = newArena + newSize;
+            p = nxArenaAlloc(A, numBytes);
+        }
+    }
+    else
+    {
+        p = A->start + A->cursor;
+        A->cursor += numBytes;
+    }
+
+    return p;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // Global variables (YES I KNOW!) and constants
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -373,7 +510,7 @@ int gWindowRefCount = 0;
 #define NX_WINDOW_HEIGHT    256
 #define NX_BORDER_WIDTH     ((NX_WINDOW_WIDTH - NX_SCREEN_WIDTH) / 2)
 #define NX_BORDER_HEIGHT    ((NX_WINDOW_HEIGHT - NX_SCREEN_HEIGHT) / 2)
-#define NX_NUM_PAGES        32
+#define NX_NUM_PAGES        64
 
 struct _Next
 {
@@ -384,6 +521,8 @@ struct _Next
     nxByte              banks[4];
     nxByte              pages[NX_NUM_PAGES][16384];
     nxByte              palette[256];
+    nxByte              page0_2;
+    nxByte              page3_5;
 
     // Timings
     clock_t             lastTimeStamp;  // Used to measure time passing
@@ -398,6 +537,7 @@ struct _Next
     nxByte              layer2Bank;                 // Sub bank (0-2) of layer
     nxByte              layer2BankStart;            // Start bank for layer 2 VRAM
     nxByte              layer2ShadowBankStart;      // Start bank for layer 2 shadow VRAM
+    nxByte              layer2Transparent;          // Transparent palette index
     nxBool              layer2ShadowEnable;         // Select for shadow VRAM
     nxBool              layer2Enable;               // Layer 2 visible
     nxBool              layer2Write0;               // RAM slot 1 mapped to VRAM (shadow or normal)
@@ -443,7 +583,7 @@ NxInternal void nxRenderULA(Next N)
             //
             //  ROW = SSCC CRRR
             //      = YYYY Y000
-            nxWord bank = 5;
+            nxByte bank = 5;
             nxWord p = ((r & 0x0c0) << 5) + ((r & 0x7) << 8) + ((r & 0x38) << 2);
             nxWord a = 0x1800 + ((r & 0xf8) << 2);
 
@@ -506,7 +646,7 @@ void nxRenderLayer2(Next N)
             for (int col = 0; col < 256; ++col)
             {
                 nxByte pixel = nxPeekEx(N, bank + b, address++);
-                if (pixel != 0xe3)
+                if (pixel != N->layer2Transparent)
                 {
                     img[col] = nxConvertNextLayer2Pixel(N, pixel);
                 }
@@ -863,12 +1003,15 @@ Next nxOpen()
     N->banks[1] = 5;
     N->banks[2] = 2;
     N->banks[3] = 0;
+    N->page0_2 = 0;
+    N->page3_5 = 0;
 
     for (int i = 0; i < 256; ++i) N->palette[i] = i;
 
     N->layer2Bank = 0;
     N->layer2BankStart = 8;
     N->layer2ShadowBankStart = 11;
+    N->layer2Transparent = 0xe3;
     N->layer2ShadowEnable = NX_NO;
     N->layer2Enable = NX_NO;
     N->layer2Write0 = NX_NO;
@@ -886,8 +1029,8 @@ void nxClose(Next N)
         {
             nxWin32CloseWindow(N->window);
         }
-        NX_FREE(N->image, sizeof(nxDword) * NX_WINDOW_WIDTH * NX_WINDOW_HEIGHT);
-        NX_FREE(N, sizeof(struct _Next));
+        NX_FREE(N->image);
+        NX_FREE(N);
     }
 }
 
@@ -957,7 +1100,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdLine, int cmdShow)
 // Win32 version of memory API
 //----------------------------------------------------------------------------------------------------------------------
 
-NxInternal nxCalcMem(Next N, nxWord address, nxWord* bank, nxWord* p, nxBool isWrite)
+NxInternal nxCalcMem(Next N, nxWord address, nxByte* bank, nxWord* p, nxBool isWrite)
 {
     nxWord slot = (address & 0xc000) >> 14;
     *p = (address & 0x3fff);
@@ -976,15 +1119,28 @@ NxInternal nxCalcMem(Next N, nxWord address, nxWord* bank, nxWord* p, nxBool isW
 
 void nxPoke(Next N, nxWord address, nxByte b)
 {
-    nxWord bank, p;
+    nxByte bank;
+    nxWord p;
     nxCalcMem(N, address, &bank, &p, NX_YES);
     N->pages[bank][p] = b;
 }
 
-void nxPoke16(Next N, nxWord address, nxWord b)
+void nxPoke16(Next N, nxWord address, nxWord w)
 {
-    nxPoke(N, address, NX_LO(b));
-    nxPoke(N, address+1, NX_HI(b));
+    nxPoke(N, address, NX_LO(w));
+    nxPoke(N, address+1, NX_HI(w));
+}
+
+void nxPokeEx(Next N, nxByte bank, nxWord address, nxByte b)
+{
+    address &= 0x3fff;
+    N->pages[bank][address] = b;
+}
+
+void nxPoke16Ex(Next N, nxByte bank, nxWord address, nxWord w)
+{
+    nxPokeEx(N, bank, address, NX_LO(w));
+    nxPokeEx(N, bank, address + 1, NX_HI(w));
 }
 
 nxBool nxPokeBuffer(Next N, nxWord address, const void* buffer, nxWord size)
@@ -994,6 +1150,18 @@ nxBool nxPokeBuffer(Next N, nxWord address, const void* buffer, nxWord size)
     for (nxWord i = 0; i < size; ++i)
     {
         nxPoke(N, address + i, *b++);
+    }
+    nxRedraw(N);
+    return NX_YES;
+}
+
+nxBool nxPokeBufferEx(Next N, nxByte bank, nxWord address, const void* buffer, nxWord size)
+{
+    if ((nxInt)address + (nxInt)size > 16384) return NX_NO;
+    nxByte* b = (nxByte *)buffer;
+    for (nxWord i = 0; i < size; ++i)
+    {
+        nxPokeEx(N, bank, address, *b++);
     }
     nxRedraw(N);
     return NX_YES;
@@ -1014,7 +1182,8 @@ nxBool nxPokeFile(Next N, nxWord address, const char* fileName)
 
 nxByte nxPeek(Next N, nxWord address)
 {
-    nxWord bank, p;
+    nxByte bank;
+    nxWord p;
     nxCalcMem(N, address, &bank, &p, NX_NO);
     return nxPeekEx(N, bank, p);
 }
@@ -1024,13 +1193,13 @@ nxWord nxPeek16(Next N, nxWord address)
     return nxPeek(N, address) + 256 * nxPeek(N, address + 1);
 }
 
-nxByte nxPeekEx(Next N, nxWord bank, nxWord p)
+nxByte nxPeekEx(Next N, nxByte bank, nxWord p)
 {
     p &= 0x3fff;
     return N->pages[bank][p];
 }
 
-nxWord nxPeek16Ex(Next N, nxWord bank, nxWord p)
+nxWord nxPeek16Ex(Next N, nxByte bank, nxWord p)
 {
     return nxPeekEx(N, bank, p) + 256 * nxPeekEx(N, bank, p + 1);
 }
@@ -1046,6 +1215,24 @@ void nxOut(Next N, nxWord port, nxByte b)
 
     switch (l)
     {
+    case 0xfd:
+        {
+            switch (h)
+            {
+            case 0x7f:
+                N->page0_2 = (b & 0x07);
+                break;
+
+            case 0xdf:
+                N->page3_5 = (b & 0x07);
+                break;
+            }
+
+            // Switch slot 4
+            N->banks[3] = N->page0_2 + (N->page3_5 << 3);
+        }
+        break;
+
     case 0xfe:
         {
             nxByte border = b & 7;
@@ -1084,6 +1271,10 @@ void nxOut(Next N, nxWord port, nxByte b)
                 N->layer2ShadowBankStart = (b & 31);
                 nxRedraw(N);
                 break;
+
+            case 0x14:  // Layer 2 transparency register
+                N->layer2Transparent = b;
+                break;
             }
             break;
 
@@ -1108,6 +1299,388 @@ nxByte nxReadReg(Next N, nxByte reg)
 {
     nxOut(N, NX_PORT_REG_SELECT, reg);
     return nxIn(N, NX_PORT_REG_RW);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// PNG and NIM support
+//----------------------------------------------------------------------------------------------------------------------
+
+#ifdef NX_USE_STB
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+NxInternal nxByte nxSnapPalette(Next N, nxByte r, nxByte g, nxByte b)
+{
+    nxByte nearestIndex;
+    nxFloat nearestDistance = 1000.0;
+
+    nxFloat rr = (nxFloat)r;
+    nxFloat gg = (nxFloat)g;
+    nxFloat bb = (nxFloat)b;
+
+    for (int i = 0; i < 256; ++i)
+    {
+        nxFloat prr = (nxFloat)(kColour_3bit[(N->palette[i] & 0xe0) >> 5]);
+        nxFloat pgg = (nxFloat)(kColour_3bit[(N->palette[i] & 0x1c) >> 2]);
+        nxFloat pbb = (nxFloat)(kColour_2bit[(N->palette[i] & 0x03) >> 0]);
+
+        nxFloat d = sqrt(rr*prr + gg*pgg + bb*pbb);
+        if (d < nearestDistance)
+        {
+            nearestDistance = d;
+            nearestIndex = i;
+        }
+    }
+
+    return nearestIndex;
+}
+
+nxByte* nxPngRead(Next N, const char* filename, nxWord* width, nxWord* height)
+{
+    int w, h, bpp;
+    nxDword* img = (nxDword *)stbi_load(filename, &w, &h, &bpp, 4);
+    nxDword* in = img;
+    if (!img) return 0;
+    nxQword size = w * h;
+
+    nxByte* nxtImg = NX_ALLOC(size);
+    nxByte* out = nxtImg;
+
+    // STB loads image data in format: RGBA RGBA... So *img is of the format ABGR
+    for (int row = 0; row < h; ++row)
+    {
+        for (int col = 0; col < w; ++col)
+        {
+            nxByte a = (*in & 0xff000000) >> 24;
+            nxByte b = (*in & 0x00ff0000) >> 16;
+            nxByte g = (*in & 0x0000ff00) >> 8;
+            nxByte r = (*in & 0x000000ff);
+
+            // Search
+            *out++ = a ? nxSnapPalette(N, r, g, b) : N->layer2Transparent;
+            ++in;
+        }
+    }
+
+    stbi_image_free(img);
+    *width = w;
+    *height = h;
+    return nxtImg;
+}
+
+void nxPngFree(nxByte* img)
+{
+    NX_FREE(img);
+}
+
+#endif // NX_USE_STB
+
+
+#define NX_DEFLATE_MAX_BLOCK_SIZE   65536
+#define NX_BLOCK_HEADER_SIZE        5
+
+NxInternal nxDword nxAdler32(nxDword state, const nxByte* data, nxInt len)
+{
+    nxWord s1 = state;
+    nxWord s2 = state >> 16;
+    for (nxInt i = 0; i < len; ++i)
+    {
+        s1 = (s1 + data[i]) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    return (nxDword)s2 << 16 | s1;
+}
+
+// Table of CRCs of all 8-bit messages.
+unsigned long kCrcTable[256];
+
+// Flag: has the table been computed? Initially false.
+nxBool gCrcTableComputed = NX_NO;
+
+// Make the table for a fast CRC.
+void nxCrcMakeTable(void)
+{
+    nxDword c;
+    int n, k;
+
+    for (n = 0; n < 256; n++) {
+        c = (nxDword)n;
+        for (k = 0; k < 8; k++) {
+            if (c & 1)
+                c = 0xedb88320L ^ (c >> 1);
+            else
+                c = c >> 1;
+        }
+        kCrcTable[n] = c;
+    }
+    gCrcTableComputed = NX_YES;
+}
+
+// Update a running CRC with the bytes data[0..len-1]--the CRC
+// should be initialized to all 1's, and the transmitted value
+// is the 1's complement of the final running CRC (see the
+// nxCrc32() routine below).
+
+nxDword nxCrc32Update(nxDword crc, void* data, nxInt len)
+{
+    nxDword c = crc;
+    nxByte* d = (nxByte *)data;
+
+    if (!gCrcTableComputed) nxCrcMakeTable();
+    for (nxInt n = 0; n < len; n++) {
+        c = kCrcTable[(c ^ d[n]) & 0xff] ^ (c >> 8);
+    }
+    return c;
+}
+
+/* Return the CRC of the bytes buf[0..len-1]. */
+nxDword nxCrc32(void* data, nxInt len)
+{
+    return nxCrc32Update(0xffffffffL, data, len) ^ 0xffffffffL;
+}
+
+nxBool nxPngWrite(Next N, const char* fileName, nxByte* img, int width, int height)
+{
+    // Swizzle image from ARGB to ABGR
+    nxDword* newImg = NX_ALLOC(sizeof(nxDword)*width*height);
+    nxByte* src = (nxByte *)img;
+    nxByte* dst = (nxByte *)newImg;
+
+    // Data is BGRABGRA...  should be RGBARGBA...
+    for (int yy = 0; yy < height; ++yy)
+    {
+        for (int xx = 0; xx < width; ++xx)
+        {
+            // Write red
+            dst[0] = kColour_3bit[(*src & 0xe0) >> 5];
+            // Write green
+            dst[1] = kColour_3bit[(*src & 0x1c) >> 2];
+            // Write blue
+            dst[2] = kColour_2bit[(*src & 0x03)];
+            // Write alpha
+            dst[3] = *src == N->layer2Transparent ? 0x00 : 0xff;
+            ++src;
+            dst += 4;
+        }
+    }
+
+    // Calculate size of PNG
+    nxInt fileSize = 0;
+    nxInt lineSize = width * sizeof(nxDword) + 1;
+    nxInt imgSize = lineSize * height;
+    nxInt overheadSize = imgSize / NX_DEFLATE_MAX_BLOCK_SIZE;
+    if (overheadSize * NX_DEFLATE_MAX_BLOCK_SIZE < imgSize)
+    {
+        ++overheadSize;
+    }
+    overheadSize = overheadSize * 5 + 6;
+    nxInt dataSize = imgSize + overheadSize;      // size of zlib + deflate output
+    nxDword adler = 1;
+    nxInt deflateRemain = imgSize;
+    nxByte* imgBytes = (nxByte *)newImg;
+
+    fileSize = 43;
+    fileSize += dataSize + 4;       // IDAT deflated data
+
+                                    // Open arena
+    NxArena m;
+    nxArenaInit(&m, dataSize + 1024);
+    nxByte* p = nxArenaAlloc(&m, 43);
+    nxByte* start = p;
+
+    // Write file format
+    nxByte header[] = {
+        // PNG header
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        // IHDR chunk
+        0x00, 0x00, 0x00, 0x0d,                                 // length
+        0x49, 0x48, 0x44, 0x52,                                 // 'IHDR'
+        width >> 24, width >> 16, width >> 8, width,            // width
+        height >> 24, height >> 16, height >> 8, height,        // height
+        0x08, 0x06, 0x00, 0x00, 0x00,                           // 8-bit depth, true-colour+alpha format
+        0x00, 0x00, 0x00, 0x00,                                 // CRC-32 checksum
+        // IDAT chunk
+        (nxByte)(dataSize >> 24), (nxByte)(dataSize >> 16), (nxByte)(dataSize >> 8), (nxByte)dataSize,
+        0x49, 0x44, 0x41, 0x54,                                 // 'IDAT'
+        // Deflate data
+        0x08, 0x1d,                                             // ZLib CMF, Flags (Compression level 0)
+    };
+    nxMemoryCopy(header, p, sizeof(header) / sizeof(header[0]));
+    nxDword crc = nxCrc32(&p[12], 17);
+    p[29] = crc >> 24;
+    p[30] = crc >> 16;
+    p[31] = crc >> 8;
+    p[32] = crc;
+    crc = nxCrc32(&p[37], 6);
+
+    // Write out the pixel data compressed
+    int x = 0;
+    int y = 0;
+    nxInt count = width * height * sizeof(nxDword);
+    nxInt deflateFilled = 0;
+    while (count > 0)
+    {
+        // Start DEFALTE block
+        if (deflateFilled == 0)
+        {
+            nxDword size = NX_DEFLATE_MAX_BLOCK_SIZE;
+            if (deflateRemain < (nxInt)size)
+            {
+                size = (nxWord)deflateRemain;
+            }
+            nxByte blockHeader[NX_BLOCK_HEADER_SIZE] = {
+                deflateRemain <= NX_DEFLATE_MAX_BLOCK_SIZE ? 1 : 0,
+                size,
+                size >> 8,
+                (size) ^ 0xff,
+                (size >> 8) ^ 0xff
+            };
+            p = nxArenaAlloc(&m, sizeof(blockHeader));
+            nxMemoryCopy(blockHeader, p, sizeof(blockHeader));
+            crc = nxCrc32Update(crc, blockHeader, sizeof(blockHeader));
+        }
+
+        // Calculate number of bytes to write in this loop iteration
+        nxDword n = 0xffffffff;
+        if ((nxDword)count < n)
+        {
+            n = (nxDword)count;
+        }
+        if ((nxDword)(lineSize - x) < n)
+        {
+            n = (nxDword)(lineSize - x);
+        }
+        NX_ASSERT(deflateFilled < NX_DEFLATE_MAX_BLOCK_SIZE);
+        if ((nxDword)(NX_DEFLATE_MAX_BLOCK_SIZE - deflateFilled) < n)
+        {
+            n = (nxDword)(NX_DEFLATE_MAX_BLOCK_SIZE - deflateFilled);
+        }
+        NX_ASSERT(n != 0);
+
+        // Beginning of row - write filter method
+        if (x == 0)
+        {
+            p = nxArenaAlloc(&m, 1);
+            *p = 0;
+            crc = nxCrc32Update(crc, p, 1);
+            adler = nxAdler32(adler, p, 1);
+            --deflateRemain;
+            ++deflateFilled;
+            ++x;
+            if (count != n) --n;
+        }
+
+        // Write bytes and update checksums
+        p = nxArenaAlloc(&m, n);
+        nxMemoryCopy(imgBytes, p, n);
+        crc = nxCrc32Update(crc, imgBytes, n);
+        adler = nxAdler32(adler, imgBytes, n);
+        imgBytes += n;
+        count -= n;
+        deflateRemain -= n;
+        deflateFilled += n;
+        if (deflateFilled == NX_DEFLATE_MAX_BLOCK_SIZE)
+        {
+            deflateFilled = 0;
+        }
+        x += n;
+        if (x == lineSize) {
+            x = 0;
+            ++y;
+            if (y == height)
+            {
+                // Wrap things up
+                nxByte footer[20] = {
+                    adler >> 24, adler >> 16, adler >> 8, adler,    // Adler checksum
+                    0, 0, 0, 0,                                     // Chunk crc-32 checksum
+                                                                    // IEND chunk
+                                                                    0x00, 0x00, 0x00, 0x00,
+                                                                    0x49, 0x45, 0x4e, 0x44,
+                                                                    0xae, 0x42, 0x60, 0x82,
+                };
+                crc = nxCrc32Update(crc, footer, 20);
+                footer[4] = crc >> 24;
+                footer[5] = crc >> 16;
+                footer[6] = crc >> 8;
+                footer[7] = crc;
+
+                p = nxArenaAlloc(&m, 20);
+                nxMemoryCopy(footer, p, 20);
+                break;
+            }
+        }
+    }
+
+    // Transfer file
+    NX_FREE(newImg);
+    nxByte* end = nxArenaAlloc(&m, 0);
+    nxInt numBytes = (nxInt)(end - start);
+    NxData d = nxDataMake(fileName, numBytes);
+    if (d.bytes)
+    {
+        nxMemoryCopy(start, d.bytes, numBytes);
+        nxDataUnload(d);
+        nxArenaDone(&m);
+        return NX_YES;
+    }
+    else
+    {
+        return NX_NO;
+    }
+}
+
+nxByte* nxNimRead(const char* fileName, nxWord* width, nxWord* height)
+{
+    NxData d = nxDataLoad(fileName);
+    if (d.bytes)
+    {
+        nxWord* header = (nxWord *)d.bytes;
+        if (header[0] != 0) return 0;
+
+        *width = header[1];
+        *height = header[2];
+        nxInt size = (nxInt)header[1] * (nxInt)header[2];
+        nxByte* img = NX_ALLOC(size);
+        if (img)
+        {
+            nxMemoryCopy(&d.bytes[6], img, size);
+        }
+        else
+        {
+            return 0;
+        }
+
+        nxDataUnload(d);
+        return img;
+    }
+
+    return 0;
+}
+
+void nxNimFree(nxByte* img)
+{
+    NX_FREE(img);
+}
+
+nxBool nxNimWrite(const char* fileName, nxByte* img, nxWord width, nxWord height)
+{
+    nxInt imgSize = (nxInt)width * (nxInt)height;
+    nxWord* header;
+
+    NxData d = nxDataMake(fileName, imgSize + 3 * sizeof(nxWord));
+    if (d.bytes)
+    {
+        header = (nxWord *)d.bytes;
+        header[0] = 0x0000;
+        header[1] = width;
+        header[2] = height;
+        nxMemoryCopy(img, &header[3], imgSize);
+
+        nxDataUnload(d);
+        return NX_YES;
+    }
+
+    return NX_NO;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
