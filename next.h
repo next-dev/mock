@@ -220,6 +220,9 @@ nxByte nxIn(Next N, nxWord port);
 void nxWriteReg(Next N, nxByte reg, nxByte value);
 nxByte nxReadReg(Next N, nxByte reg);
 
+// Convenience function for banking
+void nxBank(Next N, nxByte bank);
+
 //----------------------------------------------------------------------------------------------------------------------
 // File loading
 // These routines allow reading and writing to and from files using memory mapping.  These are used internally for
@@ -287,6 +290,14 @@ nxBool nxNimWrite(const char* fileName, nxByte* img, nxWord width, nxWord height
 //void nxScreenshot(Next N, const char* fileName);
 
 //----------------------------------------------------------------------------------------------------------------------
+// Convenience macros
+// Used internally but exposed for their value.
+//----------------------------------------------------------------------------------------------------------------------
+
+#define NX_MIN(a,b) ((a) < (b) ? (a) : (b))
+#define NX_MAX(a,b) ((a) < (b) ? (b) : (a))
+
+//----------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------
@@ -297,7 +308,6 @@ nxBool nxNimWrite(const char* fileName, nxByte* img, nxWord width, nxWord height
 #include <conio.h>
 #include <fcntl.h>
 #include <io.h>
-#include <math.h>
 #include <memory.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -436,7 +446,6 @@ typedef struct
 }
 NxArena;
 
-#define NX_MAX(a,b) ((a) < (b) ? (b) : (a))
 #define NX_ARENA_INCREMENT 4096
 
 NxInternal void nxArenaInit(NxArena* A, nxInt initialSize)
@@ -1105,7 +1114,7 @@ NxInternal nxCalcMem(Next N, nxWord address, nxByte* bank, nxWord* p, nxBool isW
     nxWord slot = (address & 0xc000) >> 14;
     *p = (address & 0x3fff);
 
-    if (isWrite && N->layer2Write0)
+    if (slot == 0 && isWrite && N->layer2Write0)
     {
         // Slot 1 writes access current VRAM
         *bank = N->layer2ShadowEnable ? N->layer2ShadowBankStart + N->layer2Bank
@@ -1161,7 +1170,7 @@ nxBool nxPokeBufferEx(Next N, nxByte bank, nxWord address, const void* buffer, n
     nxByte* b = (nxByte *)buffer;
     for (nxWord i = 0; i < size; ++i)
     {
-        nxPokeEx(N, bank, address, *b++);
+        nxPokeEx(N, bank, address++, *b++);
     }
     nxRedraw(N);
     return NX_YES;
@@ -1301,6 +1310,13 @@ nxByte nxReadReg(Next N, nxByte reg)
     return nxIn(N, NX_PORT_REG_RW);
 }
 
+void nxBank(Next N, nxByte bank)
+{
+    N->page0_2 = bank & 0x07;
+    N->page3_5 = (bank >> 3);
+    N->banks[3] = bank;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // PNG and NIM support
 //----------------------------------------------------------------------------------------------------------------------
@@ -1312,7 +1328,7 @@ nxByte nxReadReg(Next N, nxByte reg)
 NxInternal nxByte nxSnapPalette(Next N, nxByte r, nxByte g, nxByte b)
 {
     nxByte nearestIndex;
-    nxFloat nearestDistance = 1000.0;
+    nxFloat nearestDistance = 256.0*256.0*256.0;
 
     nxFloat rr = (nxFloat)r;
     nxFloat gg = (nxFloat)g;
@@ -1324,7 +1340,10 @@ NxInternal nxByte nxSnapPalette(Next N, nxByte r, nxByte g, nxByte b)
         nxFloat pgg = (nxFloat)(kColour_3bit[(N->palette[i] & 0x1c) >> 2]);
         nxFloat pbb = (nxFloat)(kColour_2bit[(N->palette[i] & 0x03) >> 0]);
 
-        nxFloat d = sqrt(rr*prr + gg*pgg + bb*pbb);
+        nxFloat rrr = (rr - prr);
+        nxFloat ggg = (gg - pgg);
+        nxFloat bbb = (bb - pbb);
+        nxFloat d = rrr*rrr + ggg*ggg + bbb*bbb;
         if (d < nearestDistance)
         {
             nearestDistance = d;
